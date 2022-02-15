@@ -1,0 +1,223 @@
+Description: CAT Caylent stack
+
+Parameters:
+  Environment:
+    Default: dev
+    Description: The current environment
+    Type: String
+    AllowedValues:
+      - prod
+      - dev
+
+  InstanceType:
+    Description: Instance type for our instances
+    Type: String
+    Default: t2.micro
+  KeyName:
+    Default: dev
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+Mappings:
+  RegionDetails:
+    us-east-1:
+      CATAZ: us-east-1a
+      KeyName: dev
+      OfficeCIDR: 0.0.0.0/0
+      InternalCIDR: 10.0.1.0/24
+      CATAMI: ami-0a8b4cd432b1c3063
+      
+
+Resources:
+  CATVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap 
+        - RegionDetails
+        - !Ref 'AWS::Region'
+        - InternalCIDR
+      EnableDnsHostnames: true
+      Tags:
+        - Key: environment
+          Value: !Ref Environment
+  CATSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !FindInMap 
+        - RegionDetails
+        - !Ref 'AWS::Region'
+        - CATAZ
+      CidrBlock: !FindInMap 
+        - RegionDetails
+        - !Ref 'AWS::Region'
+        - InternalCIDR
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref CATVPC
+  CATSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: All ports from our virtual office and the internal CIDR
+      VpcId: !Ref CATVPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !FindInMap 
+            - RegionDetails
+            - !Ref 'AWS::Region'
+            - InternalCIDR
+        - IpProtocol: -1
+          CidrIp: !FindInMap 
+            - RegionDetails
+            - !Ref 'AWS::Region'
+            - OfficeCIDR
+
+  CATELB:
+    Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
+    Metadata:
+      Comment: Configure the Load Balancer with a simple health check
+    Properties:
+      Subnets:
+        - !Ref CATSubnet
+      SecurityGroups:
+        - !Ref CATSG
+      Listeners:
+        - LoadBalancerPort: '80'
+          InstancePort: '80'
+          Protocol: HTTP
+      HealthCheck:
+        Target: 'HTTP:80/'
+        Interval: '30'
+        Timeout: '10'
+        HealthyThreshold: '2'
+        UnhealthyThreshold: '10'
+  CATLC:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: !FindInMap 
+        - RegionDetails
+        - !Ref 'AWS::Region'
+        - CATAMI
+      InstanceType: !Ref InstanceType
+      AssociatePublicIpAddress: true
+      SecurityGroups:
+        - !Ref CATSG
+      KeyName: !Ref KeyName
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash
+            - |
+              echo "Hello World" > index.html
+            - python -m SimpleHTTPServer 80
+  CATAG:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: 'true'
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+        SuspendProcesses:
+          - ScheduledActions
+    Properties:
+      AvailabilityZones:
+        - !FindInMap 
+          - RegionDetails
+          - !Ref 'AWS::Region'
+          - CATAZ
+      LaunchConfigurationName: !Ref CATLC
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '1'
+      LoadBalancerNames:
+        - !Ref CATELB
+      TerminationPolicies:
+        - OldestInstance
+        - OldestLaunchConfiguration
+        - ClosestToNextInstanceHour
+      HealthCheckType: ELB
+      VPCZoneIdentifier:
+        - !Ref CATSubnet
+      HealthCheckGracePeriod: 60
+      Cooldown: 300
+      Tags:
+        - Key: environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+  CATScaleUp:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref CATAG
+      ScalingAdjustment: '3'
+  CATScaleDown:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref CATAG
+      ScalingAdjustment: '-3'
+  CATCPUAlarmHigh:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-up if CPU > 60% for 1 minute
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: '60'
+      AlarmActions:
+        - !Ref CATScaleUp
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref CATAG
+  CATCPUAlarmLow:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-down if CPU < 10% for 1 minute
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      ComparisonOperator: LessThanThreshold
+      Threshold: '10'
+      AlarmActions:
+        - !Ref CATScaleDown
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref CATAG
+  CATGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: environment
+          Value: !Ref Environment
+  CATAttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref CATVPC
+      InternetGatewayId: !Ref CATGateway
+  CATRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref CATVPC
+  CATRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref CATRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CATGateway
+  CATSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref CATSubnet
+      RouteTableId: !Ref CATRouteTable
+Outputs:
+  CreatedLoadBalancer:
+    Description: Our new Load Balancer
+    Value: !Ref CATELB
+  URL:
+    Description: URL of the website
+    Value: !Join ['', ['http://', !GetAtt [CATELB, DNSName]]]

@@ -1,0 +1,80 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Develope an autoscaling group that would scale based on demand",
+    "Metadata": {
+
+    },
+    "Parameters": {
+
+
+    "Mappings": {
+
+      "AWSRegionArch2AMI" : {
+
+        "ap-south-1"       : {"HVM64" : "ami-03cfb5e1fb4fac428", "HVMG2" : "ami-0244c1d42815af84a"},
+        "ap-southeast-1"   : {"HVM64" : "ami-0ba35dc9caf73d1c7", "HVMG2" : "ami-0e46ce0d6a87dc979"},
+        "eu-central-1"     : {"HVM64" : "ami-0474863011a7d1541", "HVMG2" : "ami-0aa1822e3eb913a11"},
+        "eu-north-1"       : {"HVM64" : "ami-0de4b8910494dba0f", "HVMG2" : "ami-32d55b4c"},
+        "eu-west-1"        : {"HVM64" : "ami-015232c01a82b847b", "HVMG2" : "ami-0d5299b1c6112c3c7"},
+        "us-east-1"        : {"HVM64" : "ami-032930428bf1abbff", "HVMG2" : "ami-0aeb704d503081ea6"},
+        "us-west-1"        : {"HVM64" : "ami-088c153f74339f34c", "HVMG2" : "ami-0a7fc72dc0e51aa77"},
+        "us-west-2"        : {"HVM64" : "ami-01fee56b22f308154", "HVMG2" : "ami-0fe84a5b4563d8f27"}
+      }
+
+    },
+
+    "Conditions": {
+
+    },
+
+    "Resources": {
+
+      "SG1" : {
+        "Type" : "AWS::EC2::SecurityGroup",
+        "Properties" : {
+          "GroupDescription" : "Allow http to client host",
+          "SecurityGroupIngress" : [{
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": "0.0.0.0/0"
+          }],
+          "VpcId" : { "Fn::GetAtt" : [ "RAY", "VpcId" ]},
+          "Tags" :  [{ "Key": "Name", "Value":  "SG1" }]
+        }
+      },
+
+      "LC":{
+        "Type":"AWS::AutoScaling::LaunchConfiguration",
+         "Properties":{
+          "ImageId":{ "Ref":"LatestAmiId" },
+         "SecurityGroups":[ { "Ref":"myEC2SecurityGroup" } ],
+          "InstanceType":{ "Ref":"InstanceType" },
+        }
+      },
+
+      "ALB": {
+         "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+         "Properties": {
+            "CrossZone": "true",
+            "Listeners" : [{
+              "InstancePort": "80",
+             "InstanceProtocol": "HTTP",
+             "LoadBalancerPort": "80",
+             "Protocol": "HTTP" }],
+             "HealthCheck": {
+             "Target": "HTTP:80/",
+             "HealthyThreshold": "2",
+             "UnhealthyThreshold": "3",
+             "Interval": "10",
+             "Timeout": "5"
+           },
+            "Tags": [{ "Key": "Name", "Value":  "ELB" }]
+         }
+      }
+
+    },
+    "Outputs": {
+
+    }
+}
